@@ -1,0 +1,10 @@
+agents:
+  research:
+    name: "Research"
+    # 选项1: ModelScope (可能遇到频率限制)
+    model: "Qwen/Qwen3-235B-A22B-Instruct-2507"
+    api_key: "ms-f33633bb-c4b3-4df9-a6b8-59f824d814ba"
+    base_url: "https://api-inference.modelscope.cn/v1"
+    max_tokens: 20480
+    temperature: 0.3
+    description: "深度研究 Agent"

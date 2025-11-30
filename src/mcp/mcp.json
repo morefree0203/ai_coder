@@ -1,0 +1,27 @@
+{
+  "mcp_servers": {
+    "bing-cn-mcp-server": {
+      "enabled": true,
+      "type": "remote_http",
+      "transport_type": "remote_http",
+      "url": "https://mcp.api-inference.modelscope.net/02b630b9a70c42/mcp",
+      "api_key": "ms-f33633bb-c4b3-4df9-a6b8-59f824d814ba",
+      "name": "web_search"
+    },
+    "modelscope_fetch": {
+      "description": "ModelScope MCP fetch 服务，用于抓取网页内容",
+      "enabled": true,
+      "type": "remote_http",
+      "transport_type": "remote_http",
+      "url": "https://mcp.api-inference.modelscope.net/b0afae1873ef4b/mcp",
+      "api_key": "ms-f33633bb-c4b3-4df9-a6b8-59f824d814ba",
+      "timeout": 30,
+      "name": "ModelScope Fetch"
+    }
+  },
+  "agent_tools": {
+    "research": {
+      "tools": ["bing-cn-mcp-server", "modelscope_fetch"]
+    }
+  }
+}

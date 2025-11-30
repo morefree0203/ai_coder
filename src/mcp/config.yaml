@@ -1,0 +1,8 @@
+# MCP 工具配置示例
+# 你可以根据实际的 MCP 服务端能力调整 endpoint、参数、method 等。
+tools:
+  - name: web_search
+    endpoint: "http://localhost:8000/search"
+    method: GET
+    params:
+      q: "{{query}}"
