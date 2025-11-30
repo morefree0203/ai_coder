@@ -90,23 +90,37 @@ class ResearchAgent:
     def _search(self, subquestions: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         search_tool = self.tools.get("web_search")
         if not search_tool:
+            print("🔍 未进行 Web Research：搜索工具未启用")
             return [{"subq": sq["subq"], "results": [], "error": "搜索工具未启用"} for sq in subquestions]
 
+        print(f"🔍 正在进行 Web Research，共 {len(subquestions)} 个子问题...")
         aggregated = []
-        for sq in subquestions:
+        for i, sq in enumerate(subquestions, 1):
             query = sq["subq"]
+            print(f"  搜索问题 {i}: {query}")
             try:
                 results = search_tool.run(query)
+                print(f"    找到 {len(results)} 个结果")
+                # 打印搜索结果摘要
+                for j, result in enumerate(results[:3], 1):  # 只显示前3个结果
+                    title = result.get('title', '(无标题)')
+                    snippet = result.get('snippet', '')[:100] + '...' if len(result.get('snippet', '')) > 100 else result.get('snippet', '')
+                    url = result.get('url', '')
+                    print(f"      [{j}] {title}")
+                    print(f"          {snippet}")
+                    print(f"          URL: {url}")
                 err = ""
             except Exception as e:
                 results = []
                 err = str(e)
+                print(f"    搜索失败: {err}")
             aggregated.append({
                 "subq": query,
                 "reason": sq.get("reason", ""),
                 "results": results,
                 "error": err
             })
+        print("🔍 Web Research 完成")
         return aggregated
 
     def _synthesize(self, query: str, search_data: List[Dict[str, Any]]) -> str:
