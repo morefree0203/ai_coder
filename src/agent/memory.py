@@ -55,7 +55,7 @@ class ConversationMemory:
             # 避免异常，直接粗略压缩
             self.compressed_context = "(未使用LLM压缩) 摘要：用户研究目标可能与之前消息相关。"
         else:
-            from langchain.prompts import PromptTemplate
+            from langchain_core.prompts import PromptTemplate
             chain = PromptTemplate(template="{text}", input_variables=["text"]).pipe(self.summarizer_llm)
             summary = chain.invoke({"text": prompt})
             if isinstance(summary, str):

@@ -1,13 +1,8 @@
-import json
 from typing import List, Dict, Any
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-# 方法1：使用 langchain-openai 包（推荐，兼容 1.x 最新规范）
 from langchain_openai import ChatOpenAI
-# 方法2：如果只装了 openai 包，用旧路径兼容（1.0.8 仍支持）
-# from langchain.chat_models.openai import ChatOpenAI
 
-# 消息类的导入路径修正（1.x 版本统一在 langchain.schema 下）
 from .prompt import (
     SYSTEM_RESEARCH_BASE,
     PLAN_PROMPT,
@@ -18,71 +13,96 @@ from .memory import ConversationMemory
 from .tools import MCPToolClient, WebSearchTool
 from ..config.settings import settings
 
-def build_chat_llm_from_agent(agent_key: str) -> ChatOpenAI:
-    """
-    通过 agents.yaml 的指定 agent 配置构建 ChatOpenAI。
-    ModelScope 提供 OpenAI 兼容的 API（base_url + api_key）。
-    """
-    cfg = settings.get_agent_config(agent_key)
-    model = cfg.get("model")
-    api_key = cfg.get("api_key")
-    base_url = cfg.get("base_url", None)
-    temperature = cfg.get("temperature", 0.3)
-    max_tokens = cfg.get("max_tokens", 2048)
-
-    # ChatOpenAI 支持自定义 base_url 与 api_key（OpenAI兼容接口）
-    llm = ChatOpenAI(
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    return llm
-
 class ResearchAgent:
     """
     单用户多轮 Research Agent。
-    使用 agents.yaml 的 research 配置来初始化模型。
+    使用 agents.yaml 的 research 配置来初始化模型，并从 MCP 的 agent_tools 映射中选取优先工具。
     """
     def __init__(self, agent_key: str = "research"):
-        # 主 LLM
-        self.llm = build_chat_llm_from_agent(agent_key)
+        # 主 LLM（仍然使用配置文件里指定的 agent 配置）
+        try:
+            cfg = settings.get_agent_config(agent_key)
+            self.llm = ChatOpenAI(
+                model=cfg.get("model"),
+                api_key=cfg.get("api_key"),
+                base_url=cfg.get("base_url"),
+                temperature=cfg.get("temperature", 0.3),
+                max_tokens=cfg.get("max_tokens", 2048),
+            )
+        except Exception:
+            # 回退到默认（若没有 agents.yaml 或配置不完整）
+            self.llm = ChatOpenAI(model=settings.__dict__.get("default_model", "gpt-4o-mini"))
 
-        # 记忆管理器
+        # 记忆管理
         self.memory = ConversationMemory()
 
-        # 压缩记忆 LLM（可复用主模型，或用配置里 memory_summary_model）
-        cfg = settings.get_agent_config(agent_key)
-        summary_model = cfg.get("memory_summary_model", cfg.get("model"))
-        self.memory.summarizer_llm = ChatOpenAI(
-            model=summary_model,
-            api_key=cfg.get("api_key"),
-            base_url=cfg.get("base_url"),
-            temperature=0.2,
-            max_tokens=1024
-        )
+        # 压缩记忆 LLM（可以与主模型相同）
+        try:
+            summary_model = cfg.get("memory_summary_model", cfg.get("model"))
+            self.memory.summarizer_llm = ChatOpenAI(
+                model=summary_model,
+                api_key=cfg.get("api_key"),
+                base_url=cfg.get("base_url"),
+                temperature=0.2,
+                max_tokens=1024
+            )
+        except Exception:
+            self.memory.summarizer_llm = None
 
-        # 工具初始化
-        self.tools = {}
+        # 工具初始化：从 MCP 配置中读取 agent_tools 映射作为 preferred list
+        self.tools: Dict[str, Any] = {}
         if settings.enable_search_tool:
             mcp_client = MCPToolClient(settings.mcp_config_path)
-            self.tools["web_search"] = WebSearchTool(mcp_client)
+
+            # 获取 mcp.json 中 agent_tools 映射（如果有）
+            preferred: List[str] = []
+            try:
+                if hasattr(mcp_client, "agent_tools"):
+                    mapping = getattr(mcp_client, "agent_tools") or {}
+                    if agent_key in mapping and isinstance(mapping[agent_key], dict):
+                        raw_preferred = mapping[agent_key].get("tools", []) or []
+                        # 将 server_key 映射为对应的 name（工具键）
+                        for tool_ref in raw_preferred:
+                            # 如果 tool_ref 在 tools 中，直接使用
+                            if tool_ref in mcp_client.tools:
+                                preferred.append(tool_ref)
+                            else:
+                                # 尝试通过 server_key 找到对应的 name
+                                for tool_name, tool_entry in mcp_client.tools.items():
+                                    if isinstance(tool_entry, dict) and tool_entry.get("server_key") == tool_ref:
+                                        preferred.append(tool_name)
+                                        break
+            except Exception:
+                preferred = []
+
+            # 如果 settings.search_tool_name 是有效工具名，确保它在 preferred 前列
+            stn = getattr(settings, "search_tool_name", None)
+            if stn and stn in mcp_client.tools and stn not in preferred:
+                preferred.insert(0, stn)
+
+            # Debug 输出：列出 MCP client 解析到的工具，以及给 WebSearchTool 的 preferred 列表
+            try:
+                print("MCPTools available:", list(mcp_client.tools.keys()))
+                print("Preferred tools for agent", agent_key, ":", preferred)
+            except Exception:
+                pass
+
+            self.tools["web_search"] = WebSearchTool(mcp_client, preferred_tool_names=preferred)
 
         self.system_message = SystemMessage(content=SYSTEM_RESEARCH_BASE)
 
     def _plan(self, query: str) -> List[Dict[str, str]]:
         plan_prompt = PLAN_PROMPT.format(
             query=query,
-            max_subquestions=settings.max_subquestions if hasattr(settings, "max_subquestions") else 5
+            max_subquestions=getattr(settings, "max_subquestions", 5)
         )
         response = self.llm.invoke([self.system_message, HumanMessage(content=plan_prompt)])
         text = response.content.strip()
         try:
+            import json
             data = json.loads(text)
             if isinstance(data, list):
-                max_n = getattr(settings, "max_subquestions", 5)
-                return data[: max_n]
+                return data[: getattr(settings, "max_subquestions", 5)]
         except Exception:
             return [{"subq": query, "reason": "原始问题（JSON解析失败回退）"}]
         return [{"subq": query, "reason": "原始问题（未识别结构）"}]
@@ -90,37 +110,42 @@ class ResearchAgent:
     def _search(self, subquestions: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         search_tool = self.tools.get("web_search")
         if not search_tool:
-            print("🔍 未进行 Web Research：搜索工具未启用")
             return [{"subq": sq["subq"], "results": [], "error": "搜索工具未启用"} for sq in subquestions]
 
-        print(f"🔍 正在进行 Web Research，共 {len(subquestions)} 个子问题...")
         aggregated = []
-        for i, sq in enumerate(subquestions, 1):
+        for sq in subquestions:
             query = sq["subq"]
-            print(f"  搜索问题 {i}: {query}")
+            chosen_tool = None
             try:
+                # 在此处可以打印实际选用的 MCP 工具名，便于调试
+                if hasattr(search_tool, "_choose_tool_name"):
+                    chosen_tool = search_tool._choose_tool_name()
+                    print(f"Using MCP tool '{chosen_tool}' for query: {query}")
                 results = search_tool.run(query)
-                print(f"    找到 {len(results)} 个结果")
-                # 打印搜索结果摘要
-                for j, result in enumerate(results[:3], 1):  # 只显示前3个结果
-                    title = result.get('title', '(无标题)')
-                    snippet = result.get('snippet', '')[:100] + '...' if len(result.get('snippet', '')) > 100 else result.get('snippet', '')
-                    url = result.get('url', '')
-                    print(f"      [{j}] {title}")
-                    print(f"          {snippet}")
-                    print(f"          URL: {url}")
-                err = ""
+                # 检查返回结果格式
+                if results is None:
+                    results = []
+                    err = "MCP 返回 None"
+                elif not isinstance(results, list):
+                    results = []
+                    err = f"MCP 返回格式错误: 期望 list，实际 {type(results).__name__}"
+                elif len(results) == 0:
+                    err = "MCP 返回空结果列表"
+                else:
+                    err = ""
+                    print(f"  ✅ 获取到 {len(results)} 条结果")
             except Exception as e:
                 results = []
-                err = str(e)
-                print(f"    搜索失败: {err}")
+                err = f"MCP 调用异常: {str(e)}"
+                print(f"  ❌ MCP 调用失败: {err}")
+            
             aggregated.append({
                 "subq": query,
                 "reason": sq.get("reason", ""),
-                "results": results,
-                "error": err
+                "results": results or [],
+                "error": err,
+                "mcp_tool_used": chosen_tool  # 记录使用的 MCP 工具
             })
-        print("🔍 Web Research 完成")
         return aggregated
 
     def _synthesize(self, query: str, search_data: List[Dict[str, Any]]) -> str:
@@ -165,6 +190,7 @@ class ResearchAgent:
         response = self.llm.invoke([self.system_message, HumanMessage(content=critique_prompt)])
         txt = response.content.strip()
         try:
+            import json
             data = json.loads(txt)
         except Exception:
             data = {

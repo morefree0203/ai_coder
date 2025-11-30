@@ -35,6 +35,8 @@ class MCPToolClient:
                     self.tools[t["name"]] = t
             if "mcp_servers" in cfg:
                 for server_key, server in cfg["mcp_servers"].items():
+                    # 优先使用配置的 name，如果没有则使用 server_key
+                    # 只注册一个键，避免重复
                     name = server.get("name") or server_key
                     entry = {
                         "name": name,
@@ -44,8 +46,8 @@ class MCPToolClient:
                         "server_key": server_key,
                         "raw": server
                     }
+                    # 只注册一个键（使用 name），保持与配置一致
                     self.tools[name] = entry
-                    self.tools[server_key] = entry
             if "agent_tools" in cfg:
                 self.agent_tools = cfg.get("agent_tools", {})
             else:
@@ -97,9 +99,29 @@ class MCPToolClient:
 
         try:
             data = resp.json()
-        except ValueError:
+            # 检查返回数据格式
+            if isinstance(data, list):
+                return data
+            elif isinstance(data, dict):
+                # 如果返回的是字典，尝试提取结果
+                # 常见的 MCP 返回格式：{"results": [...]} 或 {"data": [...]}
+                if "results" in data and isinstance(data["results"], list):
+                    return data["results"]
+                elif "data" in data and isinstance(data["data"], list):
+                    return data["data"]
+                elif "items" in data and isinstance(data["items"], list):
+                    return data["items"]
+                else:
+                    # 如果字典中没有列表，返回包装后的结果
+                    return [{"title": str(data.get("title", "MCP 响应")), 
+                            "snippet": str(data.get("content", data.get("message", str(data)))), 
+                            "url": endpoint}]
+            else:
+                # 其他类型，包装成列表
+                return [{"title": "MCP 响应", "snippet": str(data), "url": endpoint}]
+        except ValueError as e:
+            # JSON 解析失败
             return [{"title": "(非 JSON 响应)", "snippet": resp.text[:500], "url": endpoint}]
-        return data
 
 # 为兼容 pydantic v2（LangChain BaseTool 使用 pydantic），把字段声明为注解字段
 class WebSearchTool(BaseTool):
